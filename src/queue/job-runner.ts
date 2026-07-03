@@ -6,7 +6,7 @@ import {DEFAULT_MAX_RETRIES, DEFAULT_PRIORITY} from './constants.js';
 import type {QueueContext} from './context.js';
 import {executeHandler, withTimeout} from './executor.js';
 import {toJob} from './mappers.js';
-import {collectJobMetrics, formatJobMetricsPrometheus} from '../metrics/index.js';
+import {collectCronMetrics, collectJobMetrics, formatMetricsPrometheus} from '../metrics/index.js';
 
 export class JobRunner {
     constructor(private readonly ctx: QueueContext) {}
@@ -44,8 +44,9 @@ export class JobRunner {
     }
 
     async metrics(options?: MetricsOptions): Promise<string> {
-        const snapshot = collectJobMetrics(this.ctx, options);
-        return formatJobMetricsPrometheus(snapshot);
+        const jobSnapshot = collectJobMetrics(this.ctx, options);
+        const cronSnapshot = collectCronMetrics(this.ctx, options);
+        return formatMetricsPrometheus(jobSnapshot, cronSnapshot);
     }
 
     async purge(options: PurgeOptions): Promise<void> {
