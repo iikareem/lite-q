@@ -45,6 +45,9 @@ describe('queue.metrics()', () => {
         assert.match(text, /liteq_worker_pool\{state="busy"\} 0/);
         assert.match(text, /liteq_worker_pool\{state="idle"\} 0/);
         assert.match(text, /liteq_worker_pool\{state="queued"\} 0/);
+        assert.match(text, /# TYPE liteq_cron_schedules gauge/);
+        assert.match(text, /liteq_cron_schedules\{enabled="true"\} 0/);
+        assert.match(text, /liteq_cron_schedules\{enabled="false"\} 0/);
         assert.ok(text.endsWith('\n'));
     });
 
@@ -143,6 +146,81 @@ describe('queue.metrics()', () => {
         assert.match(
             recent,
             /liteq_job_duration_seconds_count\{name="sync-ledger",type="io"\} 1/,
+        );
+    });
+});
+
+describe('queue.metrics() cron', () => {
+    const queues: LiteQ[] = [];
+    const tempDirs: string[] = [];
+
+    after(async () => {
+        for (const queue of queues) {
+            await queue.stop().catch(() => {});
+        }
+        for (const dir of tempDirs) {
+            await rm(dir, {recursive: true, force: true});
+        }
+    });
+
+    it('emits execution counts and histograms per schedule', async () => {
+        const queue = new LiteQ({storagePath: ':memory:'});
+        queues.push(queue);
+
+        const handle = queue.cron('cleanup-sessions', '0 0 * * *', async () => ({cleaned: true}));
+
+        await handle.trigger();
+        await handle.trigger();
+
+        const text = await queue.metrics();
+
+        assert.match(text, /# TYPE liteq_jobs gauge/);
+        assert.match(text, /liteq_cron_schedules\{enabled="true"\} 1/);
+        assert.match(
+            text,
+            /liteq_cron_executions\{schedule="cleanup-sessions",type="io",status="completed"\} 2/,
+        );
+        assert.match(
+            text,
+            /liteq_cron_duration_seconds_count\{schedule="cleanup-sessions",type="io"\} 2/,
+        );
+    });
+
+    it('respects windowMs for cron duration histograms', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'liteq-cron-metrics-'));
+        tempDirs.push(dir);
+        const dbPath = join(dir, 'jobs.db');
+
+        const queue = new LiteQ({storagePath: dbPath});
+        queues.push(queue);
+
+        const handle = queue.cron('cleanup-sessions', '0 0 * * *', async () => ({cleaned: true}));
+
+        await handle.trigger();
+        await handle.trigger();
+
+        const db = new Database(dbPath);
+        const oldest = db
+            .prepare(
+                `SELECT id FROM lite_q_cron_executions WHERE status = 'completed' ORDER BY completed_at ASC LIMIT 1`,
+            )
+            .get() as {id: string};
+        db.prepare(`UPDATE lite_q_cron_executions SET completed_at = ? WHERE id = ?`).run(
+            Date.now() - 7 * 24 * 60 * 60 * 1000,
+            oldest.id,
+        );
+        db.close();
+
+        const allTime = await queue.metrics();
+        const recent = await queue.metrics({windowMs: 60 * 60 * 1000});
+
+        assert.match(
+            allTime,
+            /liteq_cron_duration_seconds_count\{schedule="cleanup-sessions",type="io"\} 2/,
+        );
+        assert.match(
+            recent,
+            /liteq_cron_duration_seconds_count\{schedule="cleanup-sessions",type="io"\} 1/,
         );
     });
 });
