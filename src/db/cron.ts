@@ -154,6 +154,9 @@ export class CronDB {
     private readonly selectStaleExecutionStmt;
     private readonly countCronJobsStmt;
     private readonly executionStatsStmt;
+    private readonly executionStatsByScheduleStmt;
+    private readonly executionDurationsAllStmt;
+    private readonly executionDurationsSinceStmt;
     private readonly purgeExecutionsStmt;
 
     constructor(storagePath: string) {
@@ -313,6 +316,30 @@ export class CronDB {
             GROUP BY status
         `);
 
+        this.executionStatsByScheduleStmt = this.db.prepare(`
+            SELECT j.name, j.type, e.status, COUNT(*) AS count
+            FROM lite_q_cron_executions e
+            JOIN lite_q_cron_jobs j ON j.id = e.cron_job_id
+            GROUP BY j.name, j.type, e.status
+        `);
+
+        this.executionDurationsAllStmt = this.db.prepare(`
+            SELECT j.name, j.type, e.duration_ms
+            FROM lite_q_cron_executions e
+            JOIN lite_q_cron_jobs j ON j.id = e.cron_job_id
+            WHERE e.status IN ('completed', 'failed')
+              AND e.duration_ms IS NOT NULL
+        `);
+
+        this.executionDurationsSinceStmt = this.db.prepare(`
+            SELECT j.name, j.type, e.duration_ms
+            FROM lite_q_cron_executions e
+            JOIN lite_q_cron_jobs j ON j.id = e.cron_job_id
+            WHERE e.status IN ('completed', 'failed')
+              AND e.duration_ms IS NOT NULL
+              AND e.completed_at >= ?
+        `);
+
         this.purgeExecutionsStmt = this.db.prepare(`
             DELETE FROM lite_q_cron_executions
             WHERE status IN ('completed', 'failed') AND completed_at < ?
@@ -392,6 +419,30 @@ export class CronDB {
 
     executionStats(): { status: string; count: number }[] {
         return this.executionStatsStmt.all() as { status: string; count: number }[];
+    }
+
+    executionStatsBySchedule(): { name: string; type: string; status: string; count: number }[] {
+        return this.executionStatsByScheduleStmt.all() as {
+            name: string;
+            type: string;
+            status: string;
+            count: number;
+        }[];
+    }
+
+    executionDurations(since?: number): { name: string; type: string; duration_ms: number }[] {
+        if (since !== undefined) {
+            return this.executionDurationsSinceStmt.all(since) as {
+                name: string;
+                type: string;
+                duration_ms: number;
+            }[];
+        }
+        return this.executionDurationsAllStmt.all() as {
+            name: string;
+            type: string;
+            duration_ms: number;
+        }[];
     }
 
     purgeExecutions(before: number): void {
