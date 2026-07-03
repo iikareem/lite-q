@@ -105,6 +105,10 @@ export class DB {
     private readonly completeStmt;
     private readonly failStmt;
     private readonly retryStmt;
+    private readonly statsByTypeAndStatusStmt;
+    private readonly statsByNameTypeAndStatusStmt;
+    private readonly completedDurationsAllStmt;
+    private readonly completedDurationsSinceStmt;
 
     constructor(storagePath: string) {
         this.db = new Database(storagePath);
@@ -164,6 +168,35 @@ export class DB {
                 run_at       = ?
             WHERE id = ?
         `);
+
+        this.statsByTypeAndStatusStmt = this.db.prepare(`
+            SELECT type, status, COUNT(*) AS count
+            FROM lite_q_jobs
+            GROUP BY type, status
+        `);
+
+        this.statsByNameTypeAndStatusStmt = this.db.prepare(`
+            SELECT name, type, status, COUNT(*) AS count
+            FROM lite_q_jobs
+            GROUP BY name, type, status
+        `);
+
+        this.completedDurationsAllStmt = this.db.prepare(`
+            SELECT name, type, (completed_at - started_at) AS duration_ms
+            FROM lite_q_jobs
+            WHERE status IN ('completed', 'failed')
+              AND started_at IS NOT NULL
+              AND completed_at IS NOT NULL
+        `);
+
+        this.completedDurationsSinceStmt = this.db.prepare(`
+            SELECT name, type, (completed_at - started_at) AS duration_ms
+            FROM lite_q_jobs
+            WHERE status IN ('completed', 'failed')
+              AND started_at IS NOT NULL
+              AND completed_at IS NOT NULL
+              AND completed_at >= ?
+        `);
     }
 
     initialize(): void {
@@ -208,6 +241,34 @@ export class DB {
         return this.db
             .prepare(`SELECT status, COUNT(*) AS count FROM lite_q_jobs GROUP BY status`)
             .all() as { status: string; count: number }[];
+    }
+
+    statsByTypeAndStatus(): { type: string; status: string; count: number }[] {
+        return this.statsByTypeAndStatusStmt.all() as { type: string; status: string; count: number }[];
+    }
+
+    statsByNameTypeAndStatus(): { name: string; type: string; status: string; count: number }[] {
+        return this.statsByNameTypeAndStatusStmt.all() as {
+            name: string;
+            type: string;
+            status: string;
+            count: number;
+        }[];
+    }
+
+    completedDurations(since?: number): { name: string; type: string; duration_ms: number }[] {
+        if (since !== undefined) {
+            return this.completedDurationsSinceStmt.all(since) as {
+                name: string;
+                type: string;
+                duration_ms: number;
+            }[];
+        }
+        return this.completedDurationsAllStmt.all() as {
+            name: string;
+            type: string;
+            duration_ms: number;
+        }[];
     }
 
     purge(before: number): void {
