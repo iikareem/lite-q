@@ -1,11 +1,12 @@
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import type {ClaimedJob, ExecType} from '../db/index.js';
-import type {EnqueueOptions, Enqueuer, Job, JobHandler, PurgeOptions, QueueStats} from '../types.js';
+import type {EnqueueOptions, Enqueuer, Job, JobHandler, MetricsOptions, PurgeOptions, QueueStats} from '../types.js';
 import {DEFAULT_MAX_RETRIES, DEFAULT_PRIORITY} from './constants.js';
 import type {QueueContext} from './context.js';
 import {executeHandler, withTimeout} from './executor.js';
 import {toJob} from './mappers.js';
+import {collectJobMetrics, formatJobMetricsPrometheus} from '../metrics/index.js';
 
 export class JobRunner {
     constructor(private readonly ctx: QueueContext) {}
@@ -40,6 +41,11 @@ export class JobRunner {
 
         stats.total = total;
         return stats;
+    }
+
+    async metrics(options?: MetricsOptions): Promise<string> {
+        const snapshot = collectJobMetrics(this.ctx, options);
+        return formatJobMetricsPrometheus(snapshot);
     }
 
     async purge(options: PurgeOptions): Promise<void> {

@@ -6,6 +6,7 @@ export type {
     EnqueueOptions,
     QueueStats,
     JobHandler,
+    MetricsOptions,
 } from './types.js';
 export type {
     CronHandle,

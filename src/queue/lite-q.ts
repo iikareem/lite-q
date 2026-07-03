@@ -10,7 +10,7 @@ import type {
     CronStats,
 } from '../cron/types.js';
 import {CronDB, DB} from '../db/index.js';
-import type {EnqueueOptions, Enqueuer, JobHandler, LiteQOptions, PurgeOptions, QueueStats} from '../types.js';
+import type {EnqueueOptions, Enqueuer, JobHandler, LiteQOptions, MetricsOptions, PurgeOptions, QueueStats} from '../types.js';
 import {WorkerPool} from '../worker-pool.js';
 import {
     DEFAULT_CONCURRENCY,
@@ -108,6 +108,10 @@ export class LiteQ {
 
     async stats(): Promise<QueueStats> {
         return this.jobs.stats();
+    }
+
+    async metrics(options?: MetricsOptions): Promise<string> {
+        return this.jobs.metrics(options);
     }
 
     async purge(options: PurgeOptions): Promise<void> {
