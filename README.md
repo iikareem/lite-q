@@ -10,7 +10,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-ready-3178C6?logo=typescript)](https://www.typescriptlang.org)
 [![npm](https://img.shields.io/badge/npm-v1.1.0-CB3837?logo=npm)](https://www.npmjs.com/package/@km-dev/lite-q)
 
-Delayed scheduling · Cron jobs · Atomic job locking · Exponential backoff · CPU thread isolation
+Delayed scheduling · Cron jobs · Prometheus metrics · Atomic job locking · Exponential backoff · CPU thread isolation
 
 **No Redis. No Docker. No infrastructure.**
 
@@ -24,7 +24,7 @@ Most apps don't need Redis. They need a reliable way to run background jobs with
 
 | Feature | External Redis/Infra | lite-q (SQLite) |
 | :--- | :--- | :--- |
-| **Visibility** | No visibility into what's running. | You can inspect, pause, and retry jobs. |
+| **Visibility** | No visibility into what's running. | Inspect jobs, cron history, and Prometheus metrics — see failures, backlog, and latency. |
 | **Control** | Wait for the next poll cycle. | Trigger what is available to run right now. |
 | **Performance** | No insight into execution time. | See exactly how much time each job takes. |
 | **History** | Jobs are gone once processed. | Full history of completed and failed jobs. |
@@ -151,7 +151,7 @@ On restart, any job stuck in `'processing'` beyond `jobTimeout` is returned to `
 import { LiteQ } from '@km-dev/lite-q';
 
 const queue = new LiteQ({
-    storagePath: './data/jobs.db', // or ':memory:' for tests
+    storagePath: './data/jobs.db', 
     concurrency: 4,                // max concurrent I/O jobs (default: 1)
     pollInterval: 500,             // ms between DB polls (default: 500)
     jobTimeout: 60_000,            // ms before a stuck job is released (default: 60000)
@@ -162,7 +162,7 @@ const queue = new LiteQ({
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `storagePath` | `string` | — | SQLite file path (`':memory:'` for tests) |
+| `storagePath` | `string` | — | SQLite file path |
 | `concurrency` | `number` | `1` | Max concurrent I/O jobs on the main thread |
 | `pollInterval` | `number` | `500` | ms between DB polls |
 | `jobTimeout` | `number` | `60000` | ms before a stuck `'processing'` job is released |
@@ -430,6 +430,125 @@ await queue.purgeCronExecutions({ olderThan: 30 * 24 * 60 * 60 * 1000 });
 // olderThan is a duration in ms (converted to a cutoff timestamp internally)
 ```
 
+#### Prometheus metrics
+
+Background jobs run outside the request path — when something breaks, you often find out late. `queue.metrics()` gives you **visibility into what your queue is actually doing**: how many jobs are pending, which handlers are failing, whether cron runs are slowing down, and if the worker pool is backing up.
+
+Scrape that output with **Prometheus** and chart it in **Grafana** (or any compatible tool). Instead of guessing from logs, you get a live picture of your job logic:
+
+| What you see | What it tells you |
+|---|---|
+| `liteq_jobs{status="failed"}` rising | A handler is breaking — check `liteq_jobs_by_name` to find which one |
+| `liteq_jobs{status="pending"}` growing | Jobs are enqueueing faster than they run — raise `concurrency` or `maxWorkers` |
+| `liteq_job_duration_seconds` p95 increasing | A job type is getting slower over time — DB, API, or code regression |
+| `liteq_cron_executions{status="failed"}` | A scheduled task keeps failing — catch it before the next cron fire |
+| `liteq_worker_pool{state="queued"}` | CPU workers are saturated — scale `maxWorkers` or offload work |
+| `liteq_io_active` stuck high | I/O handlers may be blocking the main thread too long |
+
+That lets you **track your queue logic in production**, spot regressions after a deploy, and **catch problems early** — failed emails, stuck PDF generation, a nightly cleanup that never finishes — without manually querying SQLite or tailing logs.
+
+`queue.metrics()` returns a **Prometheus text exposition format** string — the standard plain-text format Prometheus scrapes from a `/metrics` endpoint. lite-q does not start an HTTP server; you mount the endpoint in your own app (Express, Fastify, etc.).
+
+```typescript
+const text = await queue.metrics();
+// Returns Prometheus exposition text, e.g.:
+// # TYPE liteq_jobs gauge
+// liteq_jobs{status="pending",type="io"} 3
+// liteq_jobs{status="completed",type="worker"} 142
+// ...
+
+// Optional: limit histogram history and customize buckets
+await queue.metrics({
+    windowMs: 24 * 60 * 60 * 1000,  // histograms: last 24h only
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60],  // seconds
+});
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `windowMs` | `number` | — | Histograms only: include completed/failed rows with `completed_at` within the last N ms |
+| `buckets` | `number[]` | `[0.1, 0.5, 1, 2, 5, 10, 30, 60]` | Histogram bucket upper bounds in **seconds** |
+
+**Metrics emitted:**
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `liteq_jobs` | gauge | `status`, `type` | Job counts by status (`io` / `worker`) |
+| `liteq_jobs_by_name` | gauge | `name`, `status`, `type` | Per job-type counts |
+| `liteq_io_active` | gauge | — | I/O jobs running on the main thread right now |
+| `liteq_worker_pool` | gauge | `state` | Worker pool: `busy`, `idle`, `queued` |
+| `liteq_job_duration_seconds` | histogram | `name`, `type` | Job duration per type; also aggregated by `type` only |
+| `liteq_cron_schedules` | gauge | `enabled` | Cron schedules (`true` / `false`) |
+| `liteq_cron_executions` | gauge | `schedule`, `type`, `status` | Execution counts per cron schedule |
+| `liteq_cron_duration_seconds` | histogram | `schedule`, `type` | Cron execution duration per schedule |
+
+Mount in your HTTP server:
+
+```typescript
+import express from 'express';
+import { queue } from './queue.js';
+
+const app = express();
+
+app.get('/metrics', async (_req, res) => {
+    res.type('text/plain; version=0.0.4; charset=utf-8');
+    res.send(await queue.metrics({ windowMs: 7 * 24 * 60 * 60 * 1000 }));
+});
+
+app.listen(3000);
+```
+
+**Docker + Prometheus + Grafana** (optional — lite-q itself needs no Docker; this is only if you want charts):
+
+`prometheus.yml`:
+
+```yaml
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: lite-q
+    static_configs:
+      - targets: ['app:3000']   # your app's /metrics endpoint
+```
+
+`docker-compose.yml`:
+
+```yaml
+services:
+  app:
+    build: .
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./data:/app/data        # persist jobs.db across restarts
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - '3001:3000'
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+```
+
+Add Prometheus as a Grafana data source (`http://prometheus:9090`), then build dashboards to visualize queue health over time — for example:
+
+- **Failed jobs** — `liteq_jobs{status="failed"}` or per-handler: `liteq_jobs_by_name{status="failed"}`
+- **Backlog** — `liteq_jobs{status="pending"}` to alert when work piles up
+- **Slow handlers** — `histogram_quantile(0.95, rate(liteq_job_duration_seconds_bucket[5m]))` to see if p95 latency is creeping up
+- **Cron reliability** — `liteq_cron_executions{status="failed"}` per schedule to catch broken recurring tasks
+
+Set Grafana alerts on these queries (e.g. failed jobs > 0 for 5 minutes) so you are notified before users are affected.
+
+> **Purge and metrics:** `metrics()` reads a **snapshot of what is currently in SQLite**. Counts and histograms grow as jobs complete. Running `purge()` or `purgeCronExecutions()` **removes old rows from metrics too** — totals can go down after a purge, which is expected. If you do not purge, metrics stay consistent and only change when the queue does real work. Use `windowMs` to limit histograms to recent history without deleting rows, or pair regular purges with `windowMs` so Grafana reflects recent performance.
+
 ---
 
 ## Recommended Project Setup
@@ -490,6 +609,7 @@ await sendEmail({ to: 'user@example.com' });
 | Delayed scheduling | ✅ | ✅ | ✅ |
 | Cron / scheduled jobs | ✅ | ✅ | ❌ |
 | Exponential backoff | ✅ | ✅ | ✅ |
+| Prometheus metrics | ✅ | ❌ | ❌ |
 | Zero runtime deps | ✅ | ❌ | ❌ |
 | TypeScript built-in | ✅ | ✅ | ❌ |
 | Multi-machine workers | ❌ | ✅ | ✅ |
@@ -576,9 +696,11 @@ SQLite WAL persistence · Atomic job locking · I/O + CPU concurrency separation
 ### ✅ v1.1 — Scheduled Jobs
 `queue.cron()` and `queue.schedule()` · Persistent cron expressions · Per-run execution history · `CronHandle` (trigger, pause, resume) · Overlap skip · `cronStats()`, `listCrons()`, `cronExecutions()`, `purgeCronExecutions()`
 
+### ✅ v1.2 — Prometheus Metrics
+`queue.metrics()` · Prometheus text exposition format · Job gauges and duration histograms (`io` / `worker`) · Cron execution counts and duration histograms per schedule · `windowMs` and custom histogram buckets
 
 ### 🔜 v2.0 — Observability Dashboard
-Zero-config HTTP dashboard for queue observability — no external UI framework.
+CLI inspect command · Optional embedded HTML dashboard · Layer 2 tooling on top of metrics data
 
 ---
 
@@ -604,6 +726,9 @@ lite-q allows only one execution per schedule at a time. If a run is still `'pro
 
 **Do cron schedules survive restarts?**
 Yes. Schedule rows persist in SQLite. Handler functions live in memory, so re-call `queue.cron()` or `queue.schedule()` at boot to re-bind them (same as `register()`).
+
+**How do metrics relate to purge?**
+`queue.metrics()` reflects whatever is stored in SQLite at scrape time. `purge()` removes old completed/failed **jobs** from counts and duration histograms. `purgeCronExecutions()` does the same for **cron** execution history. Without purging, metrics only increase (or stay flat when idle). Use `windowMs` if you want histograms scoped to recent activity without deleting rows.
 
 ---
 
