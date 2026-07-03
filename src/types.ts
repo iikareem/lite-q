@@ -37,6 +37,13 @@ export interface PurgeOptions {
     olderThan: number;
 }
 
+export interface MetricsOptions {
+    /** Only include completed/failed jobs with completed_at >= Date.now() - windowMs */
+    windowMs?: number;
+    /** Histogram bucket upper bounds in seconds. Default: [0.1, 0.5, 1, 2, 5, 10, 30, 60] */
+    buckets?: number[];
+}
+
 export interface LiteQOptions {
     storagePath: string;
     concurrency?: number;
