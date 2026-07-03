@@ -47,4 +47,25 @@ export interface JobMetricsSnapshot {
     bucketsSec: number[];
 }
 
+export interface ScheduleStatusCount {
+    schedule: string;
+    type: ExecType;
+    status: string;
+    count: number;
+}
+
+export interface ScheduleHistogram {
+    schedule: string;
+    type: ExecType;
+    histogram: HistogramData;
+}
+
+export interface CronMetricsSnapshot {
+    schedulesEnabled: number;
+    schedulesDisabled: number;
+    byScheduleAndStatus: ScheduleStatusCount[];
+    histogramsBySchedule: ScheduleHistogram[];
+    bucketsSec: number[];
+}
+
 export type {MetricsOptions};

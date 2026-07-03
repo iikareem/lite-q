@@ -1,4 +1,4 @@
-import type {HistogramData, JobMetricsSnapshot} from './types.js';
+import type {CronMetricsSnapshot, HistogramData, JobMetricsSnapshot} from './types.js';
 
 function escapeLabel(value: string): string {
     return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
@@ -68,5 +68,47 @@ export function formatJobMetricsPrometheus(snapshot: JobMetricsSnapshot): string
         appendHistogram(lines, 'liteq_job_duration_seconds', row.histogram, {type: row.type});
     }
 
-    return `${lines.join('\n')}\n`;
+    return lines.join('\n');
+}
+
+export function formatCronMetricsPrometheus(snapshot: CronMetricsSnapshot): string {
+    const lines: string[] = [];
+
+    lines.push('# HELP liteq_cron_schedules Number of cron schedules by enabled state');
+    lines.push('# TYPE liteq_cron_schedules gauge');
+    appendGauge(lines, 'liteq_cron_schedules', snapshot.schedulesEnabled, {enabled: 'true'});
+    appendGauge(lines, 'liteq_cron_schedules', snapshot.schedulesDisabled, {enabled: 'false'});
+
+    lines.push('# HELP liteq_cron_executions Number of cron executions by schedule and status');
+    lines.push('# TYPE liteq_cron_executions gauge');
+    for (const row of snapshot.byScheduleAndStatus) {
+        appendGauge(lines, 'liteq_cron_executions', row.count, {
+            schedule: row.schedule,
+            type: row.type,
+            status: row.status,
+        });
+    }
+
+    lines.push('# HELP liteq_cron_duration_seconds Cron execution duration in seconds');
+    lines.push('# TYPE liteq_cron_duration_seconds histogram');
+    for (const row of snapshot.histogramsBySchedule) {
+        appendHistogram(lines, 'liteq_cron_duration_seconds', row.histogram, {
+            schedule: row.schedule,
+            type: row.type,
+        });
+    }
+
+    return lines.join('\n');
+}
+
+export function formatMetricsPrometheus(
+    jobSnapshot: JobMetricsSnapshot,
+    cronSnapshot: CronMetricsSnapshot,
+): string {
+    const jobText = formatJobMetricsPrometheus(jobSnapshot);
+    const cronText = formatCronMetricsPrometheus(cronSnapshot);
+    if (cronText.length === 0) {
+        return `${jobText}\n`;
+    }
+    return `${jobText}\n${cronText}\n`;
 }
