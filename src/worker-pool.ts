@@ -41,6 +41,16 @@ export class WorkerPool {
         return this.findIdle() !== undefined || this.workers.length < this.maxWorkers;
     }
 
+    snapshot(): { busy: number; idle: number; queued: number } {
+        let busy = 0;
+        let idle = 0;
+        for (const entry of this.workers) {
+            if (entry.busy) busy++;
+            else idle++;
+        }
+        return {busy, idle, queued: this.queue.length};
+    }
+
     execute(handlerPath: string, job: Job): Promise<void> {
         const worker = this.acquireWorker();
         if (!worker) {
